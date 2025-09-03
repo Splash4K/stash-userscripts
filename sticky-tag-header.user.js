@@ -51,27 +51,35 @@
     return Number.isFinite(n) ? n : 0;
   };
 
-  function mainBottom() {
-    const els = Array.from(document.querySelectorAll(MAIN_NAV_SEL)).filter(vis);
-    if (!els.length) return 50;
-    const bottoms = els.map((el) => el.getBoundingClientRect().bottom);
-    return Math.round(Math.max(...bottoms));
+  function pinnedBottomAtTop() {
+    const nodes = Array.from(document.querySelectorAll(MAIN_NAV_SEL)).filter(vis);
+    const pinned = nodes.filter(el => {
+      const cs = getComputedStyle(el);
+      if (!(cs.position === 'fixed' || cs.position === 'sticky')) return false;
+      const r = el.getBoundingClientRect();
+      return r.top <= 1 && r.bottom > 1;
+    });
+    if (pinned.length) return Math.round(Math.max(...pinned.map(el => el.getBoundingClientRect().bottom)));
+    if (nodes.length) return Math.round(Math.max(...nodes.map(el => el.getBoundingClientRect().bottom)));
+    return 50;
   }
 
-  function detailStuck(mainBtm) {
-    const el = document.querySelector(DETAIL_NAV_SEL);
-    if (!el || !vis(el)) return false;
-    const cs = getComputedStyle(el);
-    const topCSS = parseFloat(cs.top);
-    const r = el.getBoundingClientRect();
-    const expected = Number.isFinite(topCSS) ? topCSS : mainBtm;
-    return Math.abs(r.top - expected) <= 1.5;
+  function pinnedBottomUnder(topEdge) {
+    const nodes = Array.from(document.querySelectorAll(DETAIL_NAV_SEL)).filter(vis);
+    const pinned = nodes.filter(el => {
+      const cs = getComputedStyle(el);
+      if (!(cs.position === 'fixed' || cs.position === 'sticky')) return false;
+      const r = el.getBoundingClientRect();
+      return r.top <= topEdge + 1 && r.bottom > r.top;
+    });
+    if (!pinned.length) return 0;
+    return Math.round(Math.max(...pinned.map(el => el.getBoundingClientRect().bottom)));
   }
 
   function apply() {
-    const mb = mainBottom();
-    const engaged = detailStuck(mb);
-    const offset = engaged ? mb + 50 : mb;
+    const topEdge = pinnedBottomAtTop();
+    const underEdge = pinnedBottomUnder(topEdge);
+    const offset = Math.max(topEdge, underEdge || 0);
     document.documentElement.style.setProperty('--sticky-offset', `${offset}px`);
 
     const headers = [
@@ -91,7 +99,7 @@
       ...document.querySelectorAll(MAIN_NAV_SEL),
       ...document.querySelectorAll(DETAIL_NAV_SEL)
     ]);
-    nodes.forEach((el) => { if (!observed.has(el)) { try { ro.observe(el); } catch {} } });
+    nodes.forEach(el => { if (!observed.has(el)) { try { ro.observe(el); } catch {} } });
     for (const el of observed) { if (!nodes.has(el)) { try { ro.unobserve(el); } catch {} } }
     observed = nodes;
   }
@@ -101,10 +109,7 @@
     apply();
     try { mo.observe(document.body, { childList: true, subtree: true, attributes: true }); } catch {}
     let raf = null;
-    addEventListener('scroll', () => {
-      if (raf) return;
-      raf = requestAnimationFrame(() => { apply(); raf = null; });
-    }, { passive: true });
+    addEventListener('scroll', () => { if (!raf) { raf = requestAnimationFrame(() => { apply(); raf = null; }); } }, { passive: true });
     addEventListener('resize', apply, { passive: true });
   }
 
