@@ -1,51 +1,146 @@
 // ==UserScript==
 // @name         Stash Revert Groups to Movies
 // @author       Splash4K
-// @version      0.1.1
+// @version      0.2.0
 // @description  Revert "Groups" with "Movies" in Stash
 // @match        http://localhost:9999/*
+// @run-at       document-idle
 // ==/UserScript==
 
 (function () {
-    'use strict';
+  'use strict';
 
-    const replacements = {
-        "groups": "movies",
-        "group": "movie",
-        "select groups": "select movies",
-        "select group": "select movie",
-        "sub-group": "sub-movie",
-        "sub-groups": "sub-movies"
-    };
+  // Don't touch
+  const EXCLUDE_SELECTOR = [
+    'script',
+    'style',
+    '[data-ignore-replace]',
+    '.alias-head',
+    '.card-section-title',
+    '.tag-name',
+    '.tooltip-inner',
+    '.TruncatedText'
+  ].join(',');
 
-    function replaceTextContent(node) {
-        let text = node.textContent.trim();
-        for (const [search, replace] of Object.entries(replacements)) {
-            const regex = new RegExp(`\\b${search}\\b`, 'gi');
-            text = text.replace(regex, (match) =>
-                match[0] === match[0].toUpperCase() ? replace.charAt(0).toUpperCase() + replace.slice(1) : replace
-            );
-        }
-        node.textContent = text;
+  const replacements = [
+    ['sub-groups', 'sub-movies'],
+    ['sub-group', 'sub-movie'],
+    ['select groups', 'select movies'],
+    ['select group', 'select movie'],
+    ['groups', 'movies'],
+    ['group', 'movie'],
+  ].map(([search, repl]) => ({
+    regex: new RegExp(`\\b${escapeRegExp(search)}\\b`, 'gi'),
+    repl
+  }));
+
+  const lastSeen = new WeakMap();
+
+  function escapeRegExp(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function caseSmartReplace(match, repl) {
+    if (match.toUpperCase() === match.toLowerCase()) return repl;
+    if (match === match.toUpperCase()) return repl.toUpperCase();
+    if (match[0] === match[0].toUpperCase()) return repl.charAt(0).toUpperCase() + repl.slice(1);
+    return repl;
+  }
+
+  function transformText(input) {
+    let changed = false;
+    let out = input;
+
+    for (const { regex, repl } of replacements) {
+      out = out.replace(regex, (m) => {
+        changed = true;
+        return caseSmartReplace(m, repl);
+      });
     }
 
-    function processElements() {
-        document.querySelectorAll('*:not(script):not(style):not([data-ignore-replace]):not(.alias-head):not(.card-section-title):not(.tag-name):not(.tooltip-inner):not(.TruncatedText)').forEach((el) => {
-            if (!el.closest('.alias-head, .card-section-title, .tag-name, .tooltip-inner, .TruncatedText') && el.childNodes.length === 1 && el.childNodes[0].nodeType === Node.TEXT_NODE) {
-                replaceTextContent(el);
-            }
-        });
-    }
+    return changed ? out : null;
+  }
 
-    function init() {
-        processElements();
-        const observer = new MutationObserver(processElements);
-        observer.observe(document.body, { childList: true, subtree: true });
-    }
+  function shouldSkip(node) {
+    return node.parentElement && node.parentElement.closest(EXCLUDE_SELECTOR);
+  }
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
+  function processTextNode(tn) {
+    if (shouldSkip(tn)) return;
+
+    const current = tn.nodeValue;
+    if (lastSeen.get(tn) === current) return;
+
+    const result = transformText(current);
+    if (result !== null && result !== current) {
+      tn.nodeValue = result;
+      lastSeen.set(tn, result);
     } else {
-        init();
+      lastSeen.set(tn, current);
     }
+  }
+
+  function walkAndProcess(root) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        return (node.nodeValue && /\S/.test(node.nodeValue)) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      }
+    });
+    let n;
+    while ((n = walker.nextNode())) {
+      processTextNode(n);
+    }
+  }
+
+  // Batch mutation handling (micro-debounced)
+  let scheduled = false;
+  const pendingRoots = new Set();
+
+  function scheduleProcess(root) {
+    if (root) pendingRoots.add(root);
+    if (scheduled) return;
+    scheduled = true;
+    queueMicrotask(() => {
+      const roots = Array.from(pendingRoots);
+      pendingRoots.clear();
+      scheduled = false;
+
+      for (const r of roots) {
+        if (r.isConnected || r === document) walkAndProcess(r === document ? document.body : r);
+      }
+    });
+  }
+
+  function init() {
+    scheduleProcess(document);
+
+    const observer = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (m.type === 'childList') {
+          for (const node of m.addedNodes) {
+            if (node.nodeType === Node.TEXT_NODE) {
+              processTextNode(node);
+            } else if (node.nodeType === Node.ELEMENT_NODE && !node.matches(EXCLUDE_SELECTOR)) {
+              scheduleProcess(node);
+            }
+          }
+        }
+        if (m.type === 'characterData' && m.target && m.target.nodeType === Node.TEXT_NODE) {
+          processTextNode(m.target);
+        }
+      }
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init, { once: true });
+  } else {
+    init();
+  }
 })();
